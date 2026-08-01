@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "CLI institucional para inicializar proyectos Hub con arquitectura multi-repo, Docker, CI/CD y reglas de IA.",
   "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
   "bin": {
     "company-cli": "./dist/index.js",
     "create-hub-app": "./dist/index.js"
