@@ -1,5 +1,5 @@
 {
-  "name": "@company/cli",
+  "name": "@t3zcadev/company-cli",
   "version": "1.0.0",
   "description": "CLI institucional para inicializar proyectos Hub con arquitectura multi-repo, Docker, CI/CD y reglas de IA.",
   "main": "dist/index.js",
@@ -7,6 +7,7 @@
     "dist"
   ],
   "bin": {
+    "t3zcadev-cli": "./dist/index.js",
     "company-cli": "./dist/index.js",
     "create-hub-app": "./dist/index.js"
   },
@@ -16,8 +17,8 @@
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js"
   },
-  "keywords": ["cli", "hub", "scaffold", "nest", "next", "vue", "flutter", "docker"],
-  "author": "Company",
+  "keywords": ["cli", "hub", "scaffold", "nest", "next", "vue", "flutter", "docker", "t3zcadev"],
+  "author": "T3zcaDev",
   "license": "MIT",
   "dependencies": {
     "@clack/prompts": "^0.9.1",

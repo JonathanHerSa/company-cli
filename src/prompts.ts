@@ -4,7 +4,7 @@ import { generateHubProject } from './generator.js';
 import { ProjectOptions, generateRandomSecrets } from './templates.js';
 
 export async function runCliPrompts(): Promise<void> {
-  intro('🚀 Inicializador Institucional de Proyectos Hub (@company/cli)');
+  intro('🚀 Inicializador Institucional de Proyectos Hub (@t3zcadev/company-cli)');
 
   const s = spinner();
   s.start('Verificando credenciales y entorno de GitHub...');
