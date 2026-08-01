@@ -1,6 +1,6 @@
 {
   "name": "@t3zcadev/company-cli",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "CLI institucional para inicializar proyectos Hub con arquitectura multi-repo, Docker, CI/CD y reglas de IA.",
   "main": "dist/index.js",
   "files": [
