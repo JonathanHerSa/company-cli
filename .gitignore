@@ -1,6 +1,26 @@
-node_modules/
-dist/
-.env
-package-lock.json
-*.log
+# Dependencies
+node_modules
+/.pnp
+.pnp.*
 
+# Build outputs
+/dist
+/build
+*.tsbuildinfo
+
+# Logs & temp files
+*.log
+.tmp/
+.temp/
+
+# Environment & local secrets
+.env
+.env.local
+*.local
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp

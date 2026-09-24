@@ -85,8 +85,8 @@ export async function createRemoteRepo(
 
     await execa('gh', ['repo', 'create', fullRepoPath, '--private', '--confirm'], { reject: true });
     
-    // Default URL format
-    const cloneUrl = `https://github.com/${fullRepoPath}.git`;
+    // Default SSH URL format (prevents OAuth workflow scope rejections)
+    const cloneUrl = `git@github.com:${fullRepoPath}.git`;
     return { success: true, cloneUrl };
   } catch (err: any) {
     // If PAT token is provided, try Octokit API
