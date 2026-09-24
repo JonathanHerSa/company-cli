@@ -63,6 +63,48 @@ npm install -g .
 
 ---
 
+## ☁️ Despliegue en Google Cloud Run (listo desde el primer commit)
+
+Cada proyecto generado ya trae lo necesario para desplegarse a **Cloud Run + Cloud Build** (lo mismo que hizo funcionar a FTS):
+
+| Repo | Qué incluye |
+|---|---|
+| **Back** (NestJS) | Configuración validada con Joi (`src/config/envs.ts`), base de datos TypeORM (MySQL/PostgreSQL) con soporte de **socket de Cloud SQL**, scripts de migraciones (`migration:run:prod`), `GET /api/v1/health` (+ `/health/db`, `/health/redis`), `GET /api/v1/client-config` (key de Pusher para las apps), `PusherService`, `PushService` (FCM con credenciales por defecto, sin llave privada), `main.ts` listo para Cloud Run (`PORT`, `0.0.0.0`, `trust proxy`, `/reference` solo fuera de producción), `Dockerfile` de producción **no root**, `docker-entrypoint.sh` (migraciones en un Job, `MIGRATE_ONLY`) y `cloudbuild.yaml` |
+| **Front** (Next.js / Vue) | `Dockerfile` de producción no root (Next `standalone` con `--build-arg` para `NEXT_PUBLIC_*`; Vue con nginx sin privilegios), `.dockerignore`, `cloudbuild.yaml` y cliente de Pusher que no tumba la pantalla si falta la key |
+| **Mobile** (Flutter) | `Env` (`--dart-define=API_URL=...`), `ClientConfigRepository` (config desde el Back), plataformas nativas (`flutter create`) y preparación de Firebase (plugin de Google Services condicional, permiso `POST_NOTIFICATIONS`, *core library desugaring*) |
+| **Hub** (raíz) | `deploy/staging.env` (definición del entorno, sin secretos) y `docs/deploy.md` |
+
+Durante la generación el CLI pregunta si preparar el despliegue (`cloudbuild.yaml`, `deploy/staging.env`) y el ID del proyecto/región de Google Cloud.
+Los Dockerfiles de producción y la base del Backend se generan siempre.
+
+### Crear el entorno en Google Cloud
+
+El despliegue viene **en este mismo CLI** (sin nada más que instalar; también se invoca como `cloudrun-kit`). Requiere `gcloud`, `curl` y `openssl` (`company-cli doctor`). Edita `deploy/staging.env` (todo lo que diga `CAMBIAME`) y:
+
+```bash
+company-cli bootstrap deploy/staging.env --dry-run    # simula: solo lee, muestra qué existe y qué se crearía
+company-cli bootstrap deploy/staging.env              # crea APIs, repositorio de imágenes, cuentas, secretos, permisos, base, triggers y primer despliegue
+company-cli guide                                     # guía completa paso a paso
+```
+
+Es idempotente (repetirlo es seguro) y se niega a ejecutarse mientras queden valores `CAMBIAME`.
+Las plantillas están en `assets/cloudrun/` (archivos reales; `@if bandera` / `@else` / `@endif` y `__TOKEN__` se resuelven en `src/deploy.ts`).
+
+### Comandos de despliegue (también con el alias `cloudrun-kit`)
+
+| Comando | Qué hace |
+|---|---|
+| `company-cli init [--stack nest\|next\|vue] [--sql] [--force]` | En un repo existente: `Dockerfile` de producción, `.dockerignore` y `cloudbuild.yaml` (las mismas plantillas que el generador; no pisa archivos salvo `--force`) |
+| `company-cli env new <entorno>` | Crea `deploy/<entorno>.env` (definición completa del entorno, sin secretos) para un repo o un Hub |
+| `company-cli bootstrap <env> [--dry-run]` | Crea en Google Cloud todo lo que el pipeline necesita (incluye, opcional, la instancia de Cloud SQL, la app de Firebase con su `google-services.json` y el acceso de GitHub); idempotente. El DNS de Squarespace y otros sin API se muestra como registro exacto y se verifica |
+| `company-cli firebase-app --project ID --android-package PKG` | Crea la app Android/iOS en Firebase (si no existe) y descarga `google-services.json` / `GoogleService-Info.plist`; idempotente, con `--dry-run` |
+| `company-cli flutter-firebase [carpeta]` | Prepara una app Flutter para push (plugin de Google Services condicional, `POST_NOTIFICATIONS`, *desugaring*) |
+| `company-cli doctor` / `guide` / `where` | Revisa herramientas y sesión / muestra la guía / ruta de instalación |
+
+Sin argumentos, `company-cli` abre el asistente que crea un Hub nuevo.
+
+---
+
 ## 🛠️ Desarrollo Local
 
 Si deseas contribuir o modificar el CLI:
