@@ -1,4 +1,4 @@
-import { intro, outro, text, select, multiselect, spinner, isCancel, cancel } from '@clack/prompts';
+import { intro, outro, text, select, multiselect, confirm, spinner, isCancel, cancel } from '@clack/prompts';
 import { checkGitHubStatus, getOrgsViaToken, GitHubStatus } from './github.js';
 import { generateHubProject } from './generator.js';
 import { ProjectOptions, generateRandomSecrets } from './templates.js';
@@ -239,6 +239,49 @@ export async function runCliPrompts(): Promise<void> {
     frontendFramework = frontChoice as 'next' | 'vue';
   }
 
+  // 6. Despliegue en Google Cloud Run + Cloud Build (cloudbuild.yaml, entorno `deploy/`, guía). Los Dockerfiles de producción
+  // y la base del Backend (config validada, health, migraciones) se generan siempre.
+  let cloudRun = true;
+  let gcpProjectId = '';
+  let gcpRegion = 'us-central1';
+  if (services.includes('back') || services.includes('front')) {
+    const cloudRunChoice = await confirm({
+      message: '¿Preparar el despliegue en Google Cloud Run + Cloud Build (cloudbuild.yaml y entorno deploy/staging.env)?',
+      initialValue: true
+    });
+    if (isCancel(cloudRunChoice)) {
+      cancel('Operación cancelada.');
+      process.exit(0);
+    }
+    cloudRun = Boolean(cloudRunChoice);
+
+    if (cloudRun) {
+      const projectInput = await text({
+        message: 'ID del proyecto de Google Cloud (puedes dejarlo vacío y editarlo después en deploy/staging.env):',
+        placeholder: 'mi-proyecto-gcp',
+        defaultValue: ''
+      });
+      if (isCancel(projectInput)) {
+        cancel('Operación cancelada.');
+        process.exit(0);
+      }
+      gcpProjectId = String(projectInput ?? '').trim();
+
+      const regionInput = await text({
+        message: 'Región de Cloud Run:',
+        initialValue: 'us-central1',
+        validate: (val) => {
+          if (!val || !/^[a-z]+-[a-z]+\d+$/.test(val.trim())) return 'Formato de región inválido (ej. us-central1, europe-west1).';
+        }
+      });
+      if (isCancel(regionInput)) {
+        cancel('Operación cancelada.');
+        process.exit(0);
+      }
+      gcpRegion = String(regionInput).trim();
+    }
+  }
+
   // Auto-generate random secrets for JWT & MFA
   const generatedSecrets = generateRandomSecrets();
 
@@ -257,7 +300,10 @@ export async function runCliPrompts(): Promise<void> {
     targetDir,
     jwtSecret: generatedSecrets.jwtSecret,
     jwtRefreshSecret: generatedSecrets.jwtRefreshSecret,
-    mfaEncryptionKey: generatedSecrets.mfaEncryptionKey
+    mfaEncryptionKey: generatedSecrets.mfaEncryptionKey,
+    cloudRun,
+    gcpProjectId,
+    gcpRegion
   };
 
   const genSpinner = spinner();
@@ -294,6 +340,14 @@ export async function runCliPrompts(): Promise<void> {
   }
 
   const hubFolder = `${projectName.toLowerCase()}_hub`;
+  const deployStep = cloudRun
+    ? `
+5. Desplegar a Google Cloud Run (requiere el CLI global cloudrun-kit; ver docs/deploy.md):
+   - Edita deploy/staging.env (todo lo que diga CAMBIAME)
+   - cloudrun-kit bootstrap deploy/staging.env --dry-run   # simula, no modifica nada
+   - cloudrun-kit bootstrap deploy/staging.env             # crea todo lo necesario en Google Cloud
+`
+    : '';
 
   outro(`✨ ¡Proyecto generado e instalado con éxito!
 
@@ -309,6 +363,6 @@ export async function runCliPrompts(): Promise<void> {
    👉 "Agente, ejecuta /graphify . para construir el grafo de conocimiento del repositorio."
 
 4. Encender el entorno de desarrollo local con Docker:
-   npm run dev:all
-`);
+   docker compose -f compose.dev.yml up -d --build
+${deployStep}`);
 }

@@ -5,6 +5,7 @@ import * as templates from './templates.js';
 import { createRemoteRepo } from './github.js';
 import { downloadOnlineSkill } from './skills.js';
 import { resolveAllDockerVersions } from './docker.js';
+import * as deploy from './deploy.js';
 
 export interface GenerationResult {
   hubPath: string;
@@ -45,6 +46,12 @@ export async function generateHubProject(
   await fs.writeFile(path.join(hubPath, '.prettierignore'), templates.getPrettierIgnore());
   await fs.writeFile(path.join(hubPath, '.editorconfig'), templates.getEditorConfig());
   await fs.writeFile(path.join(hubPath, 'compose.dev.yml'), templates.getComposeDevYml(opts));
+
+  // Despliegue a Google Cloud Run + Cloud Build: definición del entorno (sin secretos) y guía. Ver src/deploy.ts.
+  if (opts.cloudRun !== false) {
+    onProgress?.('Escribiendo la definición de despliegue (deploy/staging.env y docs/deploy.md)...');
+    await deploy.writeHubCloudRun(hubPath, opts);
+  }
 
   // 2. Download and Install Hub-Level Skills (.agents/skills/) online
   onProgress?.('Descargando últimas versiones en línea de skills (graphify e impeccable)...');
@@ -120,10 +127,10 @@ export async function generateHubProject(
         result.createdRepos.push({ name: subRepoName, cloneUrl: res.cloneUrl, localPath: servicePath });
       } else if (res.error) {
         result.errors.push(`Could not create GitHub repo ${subRepoName}: ${res.error}`);
-        subRemoteUrl = `https://github.com/${opts.githubOrg}/${subRepoName}.git`;
+        subRemoteUrl = `git@github.com:${opts.githubOrg}/${subRepoName}.git`;
       }
     } else {
-      subRemoteUrl = `https://github.com/company/${subRepoName}.git`;
+      subRemoteUrl = `git@github.com:company/${subRepoName}.git`;
     }
 
     gitmodulesContent += `[submodule "${serviceFolderName}"]\n\tpath = ${serviceFolderName}\n\turl = ${subRemoteUrl}\n`;
@@ -144,15 +151,16 @@ export async function generateHubProject(
       await fs.writeFile(path.join(servicePath, '.env'), templates.getBackEnvTemplate(opts));
 
       await fs.writeFile(path.join(servicePath, 'AGENTS.md'), templates.getBackAgentsMd(opts));
-      await fs.writeFile(path.join(servicePath, 'Dockerfile'), templates.getBackDockerfile(opts));
       await fs.writeFile(path.join(servicePath, 'tsconfig.json'), templates.getNestTsConfig());
       await fs.writeFile(path.join(servicePath, 'tsconfig.build.json'), templates.getTsConfigBuild());
       await fs.writeFile(path.join(servicePath, 'nest-cli.json'), templates.getNestCliJson());
       
-      const srcDir = path.join(servicePath, 'src');
-      await fs.ensureDir(srcDir);
-      await fs.writeFile(path.join(srcDir, 'main.ts'), templates.getNestMainTs());
-      await fs.writeFile(path.join(srcDir, 'app.module.ts'), templates.getNestAppModuleTs());
+      // Base lista para producción: configuración validada, base de datos, health, plataforma (Pusher, push, client-config),
+      // main.ts y módulo raíz; Dockerfile no root + entrypoint con migraciones; cloudbuild.yaml. Ver src/deploy.ts.
+      onProgress?.('Generando la base del Backend (config validada, base de datos, health, Docker de producción)...');
+      await deploy.writeBackBase(servicePath, opts);
+      await deploy.writeBackDocker(servicePath, opts);
+      if (opts.cloudRun !== false) await deploy.writeBackCloudBuild(servicePath, opts);
 
       const workflowsDir = path.join(servicePath, '.github', 'workflows');
       await fs.ensureDir(workflowsDir);
@@ -169,7 +177,7 @@ export async function generateHubProject(
         "@nestjs/swagger": "latest",
         "@scalar/nestjs-api-reference": "latest",
         "@nestjs/bullmq": "latest",
-        "@nestjs/mailer": "latest",
+        "@nestjs-modules/mailer": "latest",
         "@google-cloud/storage": "latest",
         "nodemailer": "latest",
         "bullmq": "latest",
@@ -193,6 +201,8 @@ export async function generateHubProject(
         backDeps["firebase-admin"] = "latest";
       }
 
+      Object.assign(backDeps, deploy.backExtraDeps(opts));
+
       if (opts.database === 'mongo' || opts.backendOrm === 'mongoose') {
         backDeps["@nestjs/mongoose"] = "latest";
         backDeps["mongoose"] = "latest";
@@ -215,7 +225,8 @@ export async function generateHubProject(
           "start": "nest start",
           "start:dev": "nest start --watch",
           "lint": "eslint \"{src,apps,libs,test}/**/*.ts\"",
-          "test:ci": "jest --coverage --ci"
+          "test:ci": "jest --coverage --ci",
+          ...deploy.backMigrationScripts(opts)
         },
         dependencies: backDeps,
         devDependencies: {
@@ -228,6 +239,7 @@ export async function generateHubProject(
           "@types/qrcode": "latest",
           "@types/uuid": "latest",
           "eslint": "latest",
+          "eslint-config-prettier": "latest",
           "eslint-plugin-prettier": "latest",
           "eslint-plugin-simple-import-sort": "latest",
           "eslint-plugin-unused-imports": "latest",
@@ -258,7 +270,9 @@ export async function generateHubProject(
       await fs.writeFile(path.join(servicePath, '.env'), templates.getFrontEnvTemplate(opts));
 
       await fs.writeFile(path.join(servicePath, 'AGENTS.md'), templates.getFrontAgentsMd(opts));
-      await fs.writeFile(path.join(servicePath, 'Dockerfile'), templates.getFrontDockerfile(opts));
+      await deploy.writeFrontDocker(servicePath, opts);
+      await deploy.writeFrontBase(servicePath, opts);
+      if (opts.cloudRun !== false) await deploy.writeFrontCloudBuild(servicePath, opts);
 
       const workflowsDir = path.join(servicePath, '.github', 'workflows');
       await fs.ensureDir(workflowsDir);
@@ -287,6 +301,10 @@ export async function generateHubProject(
 
         await fs.writeFile(path.join(servicePath, 'tsconfig.json'), templates.getNextTsConfig());
         await fs.writeFile(path.join(servicePath, 'next.config.ts'), templates.getNextConfigTs());
+
+        // `public/` debe existir: la imagen de producción (standalone) la copia y `COPY` falla si no está.
+        await fs.ensureDir(path.join(servicePath, 'public'));
+        await fs.writeFile(path.join(servicePath, 'public', '.gitkeep'), '');
 
         const libDir = path.join(servicePath, 'src', 'lib');
         await fs.ensureDir(libDir);
@@ -351,6 +369,10 @@ export async function generateHubProject(
         `import 'package:flutter/material.dart';\nimport 'package:flutter_riverpod/flutter_riverpod.dart';\n\nvoid main() {\n  runApp(const ProviderScope(child: MyApp()));\n}\n\nclass MyApp extends StatelessWidget {\n  const MyApp({super.key});\n\n  @override\n  Widget build(BuildContext context) {\n    return MaterialApp(\n      title: '${opts.projectName}',\n      home: Scaffold(body: Center(child: Text('${opts.projectName} Mobile'))),\n    );\n  }\n}\n`
       );
 
+      // Config de build (API_URL), client-config y README de push; plataformas nativas + preparación de Firebase.
+      onProgress?.('Preparando Mobile (config de build, plataformas nativas y Firebase)...');
+      result.errors.push(...(await deploy.writeMobileCloudRun(servicePath, opts, onProgress)));
+
       const workflowsDir = path.join(servicePath, '.github', 'workflows');
       await fs.ensureDir(workflowsDir);
       await fs.writeFile(path.join(workflowsDir, 'ci.yml'), `name: Mobile CI
@@ -390,6 +412,10 @@ jobs:
       try {
         await execa('npm', ['install'], { cwd: servicePath });
         result.installedDependencies.push(`${serviceFolderName} (@latest)`);
+        if (service === 'back') {
+          // Normaliza formato (prettier) y orden de imports del código generado para que `npm run lint` pase de fábrica.
+          await execa('npx', ['eslint', '--fix', 'src/**/*.ts'], { cwd: servicePath, reject: false });
+        }
       } catch (err: any) {
         result.errors.push(`npm install en ${serviceFolderName} falló: ${err.message}`);
       }

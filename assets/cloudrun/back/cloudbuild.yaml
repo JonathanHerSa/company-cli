@@ -1,0 +1,98 @@
+# Cloud Build de la API de __PROJECT_NAME__ (Cloud Run): construir -> subir ->
+# @if hasCloudSql
+# migrar (Cloud Run Job, una sola vez: si falla, NO se despliega) ->
+# @endif
+# desplegar. Los valores de aquí son los DEFAULT; el trigger que crea `cloudrun-kit bootstrap` (ver
+# deploy/staging.env en el repo raíz) los sobrescribe por entorno. Guía: `cloudrun-kit guide`.
+
+substitutions:
+  _REGION: __GCP_REGION__
+  _AR_REPO: __PROJECT__
+  _SERVICE: __PROJECT__-back-staging
+  _IMAGE: __PROJECT__-back
+# @if hasCloudSql
+  _MIGRATE_JOB: __PROJECT__-back-staging-migrate
+  _CLOUDSQL_INSTANCE: __GCP_PROJECT__:__GCP_REGION__:INSTANCIA
+# @endif
+  _RUNTIME_SA: __PROJECT__-api@__GCP_PROJECT__.iam.gserviceaccount.com
+  _PORT: '8080'
+  # `0` = escala a cero (sin tráfico no hay instancia). Si la API corre trabajo de fondo (BullMQ), usa `1` o un Cloud Scheduler.
+  _MIN_INSTANCES: '0'
+  _MAX_INSTANCES: '5'
+  # Variables normales (no secretas) separadas por `#`. Definen el entorno; las reales van en deploy/<entorno>.env.
+  _ENV_VARS: NODE_ENV=production#TRUST_PROXY=1
+  # VARIABLE=secreto:latest,OTRA=otro:latest  (contraseñas, JWT, llaves). Se crean con `cloudrun-kit bootstrap`.
+  _SECRETS: __SECRETS_DEFAULT__
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  # El trigger puede pasar sustituciones que este archivo no use sin que el build falle.
+  substitution_option: ALLOW_LOOSE
+  env:
+    - DOCKER_BUILDKIT=1
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --target=production
+      - --build-arg=BUILDKIT_INLINE_CACHE=1
+      - --cache-from=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_IMAGE}:latest
+      - -t=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_IMAGE}:${BUILD_ID}
+      - -t=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_IMAGE}:latest
+      - .
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: [push, --all-tags, '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_IMAGE}']
+
+# @if hasCloudSql
+  # Migraciones ANTES de que llegue tráfico a la versión nueva. `MIGRATE_ONLY=true`: el entrypoint las aplica y termina.
+  - id: migrate
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - deploy
+      - ${_MIGRATE_JOB}
+      - --region=${_REGION}
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_IMAGE}:${BUILD_ID}
+      - --service-account=${_RUNTIME_SA}
+      - --set-cloudsql-instances=${_CLOUDSQL_INSTANCE}
+      - --max-retries=0
+      - --task-timeout=600s
+      - --update-env-vars=^#^${_ENV_VARS}#MIGRATE_ONLY=true
+      - --update-secrets=${_SECRETS}
+      - --execute-now
+      - --wait
+
+# @endif
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --region=${_REGION}
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_IMAGE}:${BUILD_ID}
+      - --service-account=${_RUNTIME_SA}
+      - --port=${_PORT}
+      - --allow-unauthenticated
+      - --min-instances=${_MIN_INSTANCES}
+      - --max-instances=${_MAX_INSTANCES}
+      - --cpu-boost
+# @if hasCloudSql
+      - --set-cloudsql-instances=${_CLOUDSQL_INSTANCE}
+# @endif
+      # Solo pasa el tráfico a la revisión nueva si su arranque fue sano.
+      - --startup-probe=httpGet.path=/__API_PREFIX__/health,httpGet.port=8080,initialDelaySeconds=5,timeoutSeconds=5,periodSeconds=5,failureThreshold=12
+      # `--update-*` (no `--set-*`): solo tocan lo listado y respetan el resto de la configuración del servicio.
+      - --update-env-vars=^#^${_ENV_VARS}#RUN_MIGRATIONS=false
+      - --update-secrets=${_SECRETS}
+
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_IMAGE}:${BUILD_ID}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_IMAGE}:latest

@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { ResolvedDockerVersions } from './docker.js';
+import { secretIgnoreBlock } from './gitignore.js';
 
 export interface ProjectOptions {
   projectName: string;
@@ -15,6 +16,12 @@ export interface ProjectOptions {
   jwtSecret?: string;
   jwtRefreshSecret?: string;
   mfaEncryptionKey?: string;
+  /** Prepara el despliegue en Google Cloud Run + Cloud Build (cloudbuild.yaml, entorno `deploy/`, guía). Por defecto sí. */
+  cloudRun?: boolean;
+  gcpProjectId?: string;
+  gcpRegion?: string;
+  /** Nombre del entorno de despliegue (`staging` por defecto): forma nombres de base, prefijo de Redis y rama. */
+  deployEnv?: string;
 }
 
 export function generateRandomSecrets() {
@@ -65,7 +72,7 @@ Antes de trabajar en un subproyecto, revisa también su \`AGENTS.md\` específic
 - **Seguridad y MFA:** MFA / 2FA (TOTP via \`otplib\`) es **MANDATORIO** para el rol \`SuperAdmin\`; opcional para el resto de los roles.
 - **Documentación de API:** Usa decoradores de Swagger (\`@nestjs/swagger\`) para tipar endpoints y modelos DTO, y visualízalos mediante **Scalar** (\`@scalar/nestjs-api-reference\`).
 - **Almacenamiento de Archivos (GCS):** Soporte unificado para Google Cloud Storage (\`@google-cloud/storage\`) y fallback local (\`STORAGE_PROVIDER=gcs|local\`).
-- **Correo Electrónico (SMTP):** Integración mediante \`@nestjs/mailer\` y \`nodemailer\`.
+- **Correo Electrónico (SMTP):** Integración mediante \`@nestjs-modules/mailer\` y \`nodemailer\`.
 - **Notificaciones Push (Firebase FCM):** Integración backend mediante \`firebase-admin\` y móvil mediante \`firebase_messaging\`.
 - **Sembrado de Datos Demo (\`SEED_DEMO_DATA\`):** El ejecutor de semillas (\`seeders\`) únicamente debe ejecutarse cuando \`NODE_ENV === 'development'\`. Prohibido correr seeders en entorno de producción.
 - **Prohibición de Polling para Tiempo Real:** Prohibido usar \`setInterval\` o timers periódicos para refrescar datos. Toda sincronización en tiempo real se realiza mediante eventos (WebSockets / Pusher).
@@ -106,7 +113,13 @@ export function getRootClaudeMd(opts: ProjectOptions): string {
 
 - **Subproyectos disponibles:**
 ${opts.services.map(s => `  - \`cd ${s.charAt(0).toUpperCase() + s.slice(1)}\``).join('\n')}
-
+${opts.cloudRun !== false ? `
+- **Desplegar a Google Cloud Run (staging):** ver \`docs/deploy.md\`.
+  \`\`\`bash
+  cloudrun-kit bootstrap deploy/staging.env --dry-run   # simula (solo lee)
+  cloudrun-kit bootstrap deploy/staging.env             # crea todo lo que el pipeline necesita
+  \`\`\`
+` : ''}
 ## Convenciones de Desarrollo
 
 - Respeta las reglas definidas en \`AGENTS.md\`.
@@ -158,7 +171,7 @@ Thumbs.db
 *.log
 .tmp/
 .temp/
-`;
+${secretIgnoreBlock()}`;
 }
 
 export function getBackGitignore(): string {
@@ -196,7 +209,7 @@ storage-credentials.json
 /coverage
 *.tsbuildinfo
 .ci-local/
-`;
+${secretIgnoreBlock()}`;
 }
 
 export function getFrontGitignore(): string {
@@ -230,7 +243,7 @@ npm-debug.log*
 /coverage
 *.tsbuildinfo
 .ci-local/
-`;
+${secretIgnoreBlock()}`;
 }
 
 export function getMobileGitignore(): string {
@@ -253,7 +266,12 @@ build/
 *.log
 google-services.json
 GoogleService-Info.plist
-`;
+
+# Firma de Android
+*.jks
+*.keystore
+key.properties
+${secretIgnoreBlock()}`;
 }
 
 // Sub-repo Environment Templates (.env and .env.template)
@@ -270,6 +288,9 @@ export function getBackEnvTemplate(opts: ProjectOptions): string {
   return `PORT=3000
 API_PREFIX=api/v1
 CORS_ORIGIN=http://localhost:3001
+# Saltos de proxy de confianza (Cloud Run: 1). ENABLE_API_DOCS: /reference (por defecto solo fuera de producción).
+TRUST_PROXY=loopback, linklocal, uniquelocal
+# ENABLE_API_DOCS=true
 
 # Database
 DB_HOST=localhost
@@ -277,6 +298,8 @@ DB_PORT=${dbPort}
 DB_USERNAME=root
 DB_PASSWORD=${dbPassword}
 DB_DATABASE=${opts.projectName.toLowerCase()}_db
+# Cloud SQL en Cloud Run: socket Unix /cloudsql/<proyecto>:<región>:<instancia> (con él, DB_HOST/DB_PORT se ignoran)
+DB_SOCKET_PATH=
 DB_SYNCHRONIZE=true
 DB_MIGRATIONS_RUN=false
 DB_POOL_SIZE=30
@@ -343,12 +366,11 @@ NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=
 }
 
 export function getMobileEnvTemplate(opts: ProjectOptions): string {
-  return `# API Target
-API_BASE_URL=http://localhost:3000/api
+  return `# URL del Back (se pasa al compilar: flutter run --dart-define-from-file=.env  o  --dart-define=API_URL=...)
+# El emulador Android llega al host por 10.0.2.2; un teléfono real, por la IP de tu equipo en la LAN.
+API_URL=http://10.0.2.2:3000
 
-# Pusher Realtime
-PUSHER_KEY=
-PUSHER_CLUSTER=us2
+# La key de Pusher NO va aquí: la app la pide al Back (GET /client-config).
 `;
 }
 
@@ -612,7 +634,7 @@ export default tseslint.config(
         { selector: 'typeLike', format: ['PascalCase'] },
         {
           selector: 'property',
-          format: ['camelCase', 'PascalCase', 'snake_case'],
+          format: ['camelCase', 'PascalCase', 'snake_case', 'UPPER_CASE'],
           leadingUnderscore: 'allow',
           filter: { regex: '(@|\\\\/)', match: false },
         },
@@ -747,6 +769,8 @@ import path from "path";
 
 const nextConfig: NextConfig = {
   distDir: process.env.NEXT_DIST_DIR ?? ".next",
+  // Servidor Node mínimo para la imagen de producción (Cloud Run): ver Dockerfile.
+  output: "standalone",
   transpilePackages: ["@base-ui/react"],
   allowedDevOrigins: ["127.0.0.1", "localhost", "127.0.0.1:3001", "localhost:3001"],
   turbopack: {
@@ -1135,7 +1159,7 @@ This file defines mandatory rules for AI agents working on the Backend service.
 - MFA / 2FA Security: **MANDATORY for SuperAdmin role** (via \`otplib\`); optional for other roles.
 - Documentation: Use **Swagger decorators** (\`@nestjs/swagger\`) on controllers/DTOs, and render via **Scalar API Reference** (\`@scalar/nestjs-api-reference\`).
 - Storage: **Google Cloud Storage** (\`@google-cloud/storage\`) + local fallback.
-- Mail: **SMTP** (\`@nestjs/mailer\` + \`nodemailer\`).
+- Mail: **SMTP** (\`@nestjs-modules/mailer\` + \`nodemailer\`).
 - Realtime: **Pusher** (\`pusher\`)
 - Queues: **BullMQ** (\`@nestjs/bullmq\`) + **Redis**
 - Demo Data Seeding: \`SEED_DEMO_DATA\` flag must strictly run ONLY when \`NODE_ENV === 'development'\`.
@@ -1150,6 +1174,17 @@ This file defines mandatory rules for AI agents working on the Backend service.
 
 - Use \`RECORD_LOOKUP\` maps instead of Stringly-Typed \`if/else\` chains.
 - Maximum \`if\` nesting depth is **2 levels**. Extract deeper branches to pure helper functions.
+
+## Deployment (Google Cloud Run)
+
+- The service MUST read its port from \`PORT\` (Cloud Run injects 8080) and listen on \`0.0.0.0\` (already done in \`main.ts\`).
+- Never read \`process.env\` outside \`src/config/envs.ts\`; add each new variable to the Joi schema and to \`configuration()\`.
+- Migrations do NOT run on service start in production: deploy with \`RUN_MIGRATIONS=false\`; a Cloud Run Job runs them once
+  (\`MIGRATE_ONLY=true\`, see \`docker-entrypoint.sh\` and \`cloudbuild.yaml\`). Keep the \`migration:run:prod\` script working.
+- Secrets (DB password, JWT, MFA, Pusher, Redis) come from Secret Manager, never from committed files or plain variables.
+- Keep \`GET /api/v1/health\` (and \`/health/db\`, \`/health/redis\`) public: Cloud Run uses them as the startup probe.
+- API docs (\`/reference\`) are served only outside production (\`ENABLE_API_DOCS=true\` to force).
+- Production images run as a non-root user. Do not write to the container filesystem: use Cloud Storage.
 
 ## Quality & Tests
 
@@ -1201,60 +1236,13 @@ This file defines mandatory rules for AI agents working on the Mobile Flutter ap
 `;
 }
 
-export function getBackDockerfile(opts?: ProjectOptions): string {
-  const nodeTag = opts?.dockerVersions?.node || '22-alpine';
-  return `FROM node:${nodeTag} AS development
-WORKDIR /app
-COPY package*.json ./
-RUN npm install
-COPY . .
-EXPOSE 3000
-CMD ["npm", "run", "start:dev"]
-
-FROM node:${nodeTag} AS builder
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
-
-FROM node:${nodeTag} AS production
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --only=production
-COPY --from=builder /app/dist ./dist
-EXPOSE 3000
-CMD ["node", "dist/main.js"]
-`;
-}
-
-export function getFrontDockerfile(opts?: ProjectOptions): string {
-  const nodeTag = opts?.dockerVersions?.node || '22-alpine';
-  const nginxTag = opts?.dockerVersions?.nginx || '1.27-alpine';
-  return `FROM node:${nodeTag} AS development
-WORKDIR /app
-COPY package*.json ./
-RUN npm install
-COPY . .
-EXPOSE 3000
-CMD ["npm", "run", "dev"]
-
-FROM node:${nodeTag} AS builder
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
-
-FROM nginx:${nginxTag} AS production
-COPY --from=builder /app/out /usr/share/nginx/html
-EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
-`;
+/** Nombre del paquete Dart de la app (debe coincidir en pubspec.yaml, `flutter create` e imports `package:`). */
+export function mobilePackageName(opts: ProjectOptions): string {
+  return `mobile_${opts.projectName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')}`;
 }
 
 export function getMobilePubspec(opts: ProjectOptions): string {
-  return `name: mobile_${opts.projectName.toLowerCase()}
+  return `name: ${mobilePackageName(opts)}
 description: "Aplicación móvil oficial de ${opts.projectName}"
 publish_to: 'none'
 version: 1.0.0+1
@@ -1289,58 +1277,6 @@ flutter:
 }
 
 // Full NestJS Starter Source Templates
-export function getNestMainTs(): string {
-  return `import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
-import { ValidationPipe } from '@nestjs/common';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import { apiReference } from '@scalar/nestjs-api-reference';
-import helmet from 'helmet';
-
-async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-  app.use(helmet());
-  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
-
-  const config = new DocumentBuilder()
-    .setTitle('API Reference')
-    .setDescription('Institutional API Documentation')
-    .setVersion('1.0')
-    .addBearerAuth()
-    .build();
-    
-  const document = SwaggerModule.createDocument(app, config);
-  
-  app.use(
-    '/reference',
-    apiReference({
-      spec: { content: document },
-    }),
-  );
-
-  const port = process.env.PORT || 3000;
-  await app.listen(port);
-  console.log(\`Backend service running on port \${port}\`);
-}
-bootstrap();
-`;
-}
-
-export function getNestAppModuleTs(): string {
-  return `import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
-
-@Module({
-  imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
-  ],
-  controllers: [],
-  providers: [],
-})
-export class AppModule {}
-`;
-}
-
 export function getTsConfigBuild(): string {
   return JSON.stringify({
     extends: "./tsconfig.json",
@@ -1360,7 +1296,9 @@ export function getNestTsConfig(): string {
       target: "ES2021",
       sourceMap: true,
       outDir: "./dist",
-      baseUrl: "./",
+      // Con TypeScript 6 la carpeta raíz ya no se deduce: sin `rootDir` la salida quedaría en dist/src/ y el
+      // `node dist/main.js` de la imagen de producción no existiría.
+      rootDir: "./src",
       incremental: true,
       skipLibCheck: true,
       strictNullChecks: false,
@@ -1368,8 +1306,9 @@ export function getNestTsConfig(): string {
       strictBindCallApply: false,
       forceConsistentCasingInFileNames: false,
       noFallthroughCasesInSwitch: false,
+      // `paths` sin `baseUrl` (obsoleto en TS 6): se resuelve relativo a este tsconfig.
       paths: {
-        "@/*": ["src/*"]
+        "@/*": ["./src/*"]
       }
     }
   }, null, 2);

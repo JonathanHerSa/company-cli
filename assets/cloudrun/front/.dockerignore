@@ -1,0 +1,25 @@
+# Lo que no se versiona tampoco debe hornearse en la imagen.
+node_modules
+dist
+build
+*.tsbuildinfo
+coverage
+logs
+*.log
+# Secretos: NUNCA dentro de la imagen (compose.dev.yml los inyecta con env_file)
+.env
+.env.*
+!.env.template
+storage-credentials.json
+*.pem
+*-firebase-adminsdk-*.json
+service-account*.json
+storage/uploads
+# Sistema, editores y control de versiones
+.DS_Store
+.vscode
+.idea
+.git
+.gitignore
+.next
+out
